@@ -180,11 +180,19 @@ semantic_model:
         expression:
           dialects:
             - dialect: ANSI_SQL
-              expression: SUM(orders.order_total)
+              expression: SUM(orders.order_total) * 0.9
         datatype: Decimal
-        description: Total value of all orders, summed from the order header.
+        description: Total value of all orders, net of a 10 percent allowance.
         ai_context:
           synonyms: ["revenue", "top line", "net sales"]
+
+      - name: orders_per_customer
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(DISTINCT orders.order_id) * 1.0 / COUNT(DISTINCT orders.customer_id)
+        datatype: Decimal
+        description: Orders placed per distinct customer.
 
       - name: order_count
         expression:
