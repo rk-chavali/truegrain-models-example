@@ -28,6 +28,9 @@ env:
   # Pinned, not latest. A model that validates today should validate tomorrow
   # for reasons that are about the model.
   TRUEGRAIN_VERSION: "1.1.0"
+  # Where the model lives in this repository. The one line to change when
+  # copying this, or set it to "." if a truegrain.yaml sits at the root.
+  MODELS: models
 
 jobs:
   check:
@@ -54,7 +57,7 @@ jobs:
       # Does the model hold together: do the joins resolve, do the expressions
       # compile, does every dataset declare a grain. No warehouse, no rows.
       - name: Validate
-        run: truegrain validate -models .
+        run: truegrain validate -models "$MODELS"
 
       # Does it still refuse what it should. Refusal cases need no warehouse,
       # so the guarantee the product is built on is checked on every pull
@@ -62,7 +65,7 @@ jobs:
       - name: Test
         run: |
           if [ -d tests ]; then
-            truegrain test -models . -tests tests
+            truegrain test -models "$MODELS" -tests tests
           else
             echo "No tests/ directory. Add one: a model nobody asserts against"
             echo "is a model that validates and answers the wrong number."
@@ -75,7 +78,7 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           git worktree add ../base "origin/${{ github.base_ref }}"
-          truegrain diff -models . -against ../base
+          truegrain diff -models "$MODELS" -against "../base/$MODELS"
 
   # Everything below needs credentials. Each one reports what it did rather
   # than skipping quietly, so a repository with no warehouse wired up says so
@@ -127,14 +130,14 @@ jobs:
       # read your data.
       - name: Doctor
         if: steps.configured.outputs.ready == 'true'
-        run: truegrain doctor -models .
+        run: truegrain doctor -models "$MODELS"
 
       # Has the warehouse moved underneath the model. Without -write this
       # changes nothing and exits non-zero, so the nightly run becomes a
       # failing check somebody turns into a pull request.
       - name: Refresh
         if: steps.configured.outputs.ready == 'true' && github.event_name == 'schedule'
-        run: truegrain refresh -models .
+        run: truegrain refresh -models "$MODELS"
 
   deploy:
     name: Deploy to the engine
