@@ -240,7 +240,7 @@ semantic_model:
         expression:
           dialects:
             - dialect: ANSI_SQL
-              expression: SUM(order_lines.quantity) * 1
+              expression: SUM(order_lines.quantity)
         datatype: Integer
         description: Total units shipped across all order lines.
 
