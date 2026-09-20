@@ -180,9 +180,9 @@ semantic_model:
         expression:
           dialects:
             - dialect: ANSI_SQL
-              expression: SUM(orders.order_total) * 0.9
+              expression: SUM(orders.order_total)
         datatype: Decimal
-        description: Total value of all orders, net of a 10 percent allowance.
+        description: Total value of all orders, summed from the order header.
         ai_context:
           synonyms: ["revenue", "top line", "net sales"]
 
