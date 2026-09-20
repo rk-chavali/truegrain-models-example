@@ -1,0 +1,188 @@
+name: Model
+
+# What a semantic model's pull request is checked for.
+#
+# Copy this into your own model repository. The first three jobs need no
+# warehouse and no secret at all, which is the point: a model is text, and
+# whether it holds together, whether it still refuses what it should, and
+# whether a change moved a number are all answerable without touching data.
+#
+# The jobs after them need credentials and skip themselves when none are
+# configured, rather than failing and teaching everybody to ignore a red run.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Schema drift is found by looking regularly. A nightly run turns "somebody
+  # dropped a column" into a failing check on a Tuesday morning rather than a
+  # caller getting an error on a Friday afternoon.
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Pinned, not latest. A model that validates today should validate tomorrow
+  # for reasons that are about the model.
+  TRUEGRAIN_VERSION: "1.1.0"
+
+jobs:
+  check:
+    name: Validate, test and diff
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # diff compares against the base branch, so the history it needs
+          # has to be here. A shallow clone makes every change look new.
+          fetch-depth: 0
+
+      - name: Install truegrain
+        run: |
+          set -euo pipefail
+          url="https://github.com/rk-chavali/truegrain/releases/download"
+          file="truegrain_${TRUEGRAIN_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o truegrain.tar.gz "$url/v${TRUEGRAIN_VERSION}/$file"
+          tar -xzf truegrain.tar.gz truegrain
+          sudo install truegrain /usr/local/bin/truegrain
+          truegrain version
+
+      # Does the model hold together: do the joins resolve, do the expressions
+      # compile, does every dataset declare a grain. No warehouse, no rows.
+      - name: Validate
+        run: truegrain validate -models .
+
+      # Does it still refuse what it should. Refusal cases need no warehouse,
+      # so the guarantee the product is built on is checked on every pull
+      # request rather than only where credentials exist.
+      - name: Test
+        run: |
+          if [ -d tests ]; then
+            truegrain test -models . -tests tests
+          else
+            echo "No tests/ directory. Add one: a model nobody asserts against"
+            echo "is a model that validates and answers the wrong number."
+          fi
+
+      # Did a change move a number. Compared on compiled SQL rather than on
+      # model text, because renaming a description is invisible to a dashboard
+      # and changing a join is not.
+      - name: Diff against the base branch
+        if: github.event_name == 'pull_request'
+        run: |
+          git worktree add ../base "origin/${{ github.base_ref }}"
+          truegrain diff -models . -against ../base
+
+  # Everything below needs credentials. Each one reports what it did rather
+  # than skipping quietly, so a repository with no warehouse wired up says so
+  # on every run instead of looking like it passed.
+
+  warehouse:
+    name: Check the model against the warehouse
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Lifted to env because a secret cannot be read from a step's `if`.
+      PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Say whether this is configured
+        id: configured
+        run: |
+          if [ -n "$PROVIDER" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No warehouse credential configured, so doctor and"
+            echo "::notice::refresh did not run. Set GCP_WORKLOAD_IDENTITY_PROVIDER"
+            echo "::notice::and GCP_SERVICE_ACCOUNT to turn them on."
+          fi
+
+      # Workload identity federation rather than a key file: there is no
+      # long-lived credential to leak, and the token is minted for this
+      # workflow in this repository and expires with the job.
+      - uses: google-github-actions/auth@v2
+        if: steps.configured.outputs.ready == 'true'
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Install truegrain
+        if: steps.configured.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          url="https://github.com/rk-chavali/truegrain/releases/download"
+          file="truegrain_${TRUEGRAIN_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o truegrain.tar.gz "$url/v${TRUEGRAIN_VERSION}/$file"
+          tar -xzf truegrain.tar.gz truegrain
+          sudo install truegrain /usr/local/bin/truegrain
+
+      # Metadata only. doctor lists schemas and compares them to what the
+      # model declares; it reads no rows, so the credential this needs cannot
+      # read your data.
+      - name: Doctor
+        if: steps.configured.outputs.ready == 'true'
+        run: truegrain doctor -models .
+
+      # Has the warehouse moved underneath the model. Without -write this
+      # changes nothing and exits non-zero, so the nightly run becomes a
+      # failing check somebody turns into a pull request.
+      - name: Refresh
+        if: steps.configured.outputs.ready == 'true' && github.event_name == 'schedule'
+        run: truegrain refresh -models .
+
+  deploy:
+    name: Deploy to the engine
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      URL: ${{ secrets.TRUEGRAIN_URL }}
+      TOKEN: ${{ secrets.TRUEGRAIN_DEPLOY_TOKEN }}
+    steps:
+      # No checkout. This step carries no model, deliberately: it tells the
+      # engine to look at the repository, which it already follows. A pipeline
+      # that pushed a model would be a second way into production, one that
+      # skips the pull request, the checks above and the diff.
+      #
+      # The engine has to be reachable from the runner. Behind a firewall it
+      # will not be, and that is the ordinary case: leave this job out and let
+      # the engine's own poll pick the merge up within its interval instead.
+      # The only thing this changes is the wait.
+      - name: Tell the engine to re-read
+        if: env.URL != ''
+        run: |
+          set -euo pipefail
+          status=$(curl -fsSL -X POST "$URL/v1/reload" \
+            -H "Authorization: Bearer $TOKEN" \
+            | python3 -c "import json,sys; print(json.load(sys.stdin)['status'])")
+          echo "engine says: $status"
+
+      # Reload names no commit on purpose: a sync is not instant, and
+      # reporting one before the swap happened would be a claim this job then
+      # asserts as fact. So the deploy is finished when health reports the
+      # commit that was merged, and not before.
+      - name: Wait for the commit to be the one answering
+        if: env.URL != ''
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 60); do
+            serving=$(curl -fsSL "$URL/v1/health" \
+              -H "Authorization: Bearer $TOKEN" \
+              | python3 -c "import json,sys; print(json.load(sys.stdin).get('origin',{}).get('commit',''))")
+            if [ "$serving" = "$GITHUB_SHA" ]; then
+              echo "serving $serving"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::The engine is still serving $serving, not $GITHUB_SHA."
+          echo "::error::A model that fails to load leaves the previous one answering;"
+          echo "::error::read the engine's logs to see which happened."
+          exit 1

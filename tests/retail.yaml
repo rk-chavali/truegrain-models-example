@@ -1,0 +1,35 @@
+# What this model must keep answering, and what it must keep refusing.
+#
+# validate says the model holds together and diff says a number changed.
+# Neither says a number was ever right, which is the gap this closes.
+#
+# The refusal cases need no warehouse: whether a question would fan out is
+# decided from the declared grain and the declared joins, before any SQL runs.
+# That is why these run on every pull request rather than only where a
+# credential exists, and why a fork with no warehouse still gets the guarantee
+# the whole project is built on checked.
+
+version: 1
+tests:
+  - name: the fan-out is refused
+    # order_revenue is declared on the order header. Grouping it by anything
+    # on a line repeats every order once per line. If this ever passes, the
+    # engine has started inflating totals and every report built on it is
+    # quietly wrong.
+    metrics: [retail.order_revenue]
+    dimensions: [retail.order_lines.item_id]
+    expect_refusal: fan_out_would_inflate
+
+  - name: a safe join is not refused
+    # The other half, and the one people forget to assert. An engine that
+    # refused everything would pass the test above and be useless.
+    metrics: [retail.order_revenue]
+    dimensions: [retail.customers.region]
+    expect_row_count: 2
+
+  - name: a line grain metric answers the question that was refused
+    # The refusal names line_revenue as the metric that does answer this. If
+    # that stops being true the hint is sending people somewhere that fails.
+    metrics: [retail.line_revenue]
+    dimensions: [retail.order_lines.item_id]
+    expect_row_count: 4
