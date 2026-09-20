@@ -190,7 +190,7 @@ semantic_model:
         expression:
           dialects:
             - dialect: ANSI_SQL
-              expression: COUNT(DISTINCT orders.order_id) * 1.0 / COUNT(DISTINCT orders.customer_id)
+              expression: COUNT(orders.order_id) * 1.0 / COUNT(DISTINCT orders.customer_id)
         datatype: Decimal
         description: Orders placed per distinct customer.
 
@@ -201,6 +201,14 @@ semantic_model:
               expression: COUNT(DISTINCT orders.order_id)
         datatype: Integer
         description: Number of distinct orders.
+
+      - name: units_per_line
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: AVG(order_lines.quantity)
+        datatype: Decimal
+        description: Average units on an order line.
 
       - name: largest_order
         expression:
